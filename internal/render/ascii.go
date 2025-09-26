@@ -1,23 +1,42 @@
 package render
 
 import (
-	"bytes"
+	"image"
+	"image/color"
 )
 
-type asciiRenderer struct{}
+// Extended ASCII ramp (dark → light)
+var asciiRamp = []rune("█▓▒@#WMB8&%$0QOC?!i;:,. ")
 
-func (a *asciiRenderer) RenderFrame(rgb []byte, w, h int) string {
-	chars := " .:-=+*#%@"
-	var b bytes.Buffer
+type ASCIIRenderer struct {
+	width  int
+	height int
+}
 
-	for i := 0; i < len(rgb); i += 3 {
-		r, g, b2 := rgb[i], rgb[i+1], rgb[i+2]
-		lum := 0.2126*float64(r) + 0.7152*float64(g) + 0.0722*float64(b2)
-		idx := int((lum / 255.0) * float64(len(chars)-1))
-		b.WriteByte(chars[idx])
-		if (i/3+1)%w == 0 {
-			b.WriteByte('\n')
+func NewASCIIRenderer(width, height int) *ASCIIRenderer {
+	return &ASCIIRenderer{width: width, height: height}
+}
+
+func (r *ASCIIRenderer) Render(img image.Image) string {
+	bounds := img.Bounds()
+	dx := float64(bounds.Dx()) / float64(r.width)
+	dy := float64(bounds.Dy()) / float64(r.height)
+
+	out := make([]rune, 0, (r.width+1)*r.height)
+
+	for y := 0; y < r.height; y++ {
+		for x := 0; x < r.width; x++ {
+			px := int(float64(x) * dx)
+			py := int(float64(y) * dy)
+
+			c := color.GrayModel.Convert(img.At(bounds.Min.X+px, bounds.Min.Y+py)).(color.Gray)
+			lum := float64(c.Y) / 255.0
+
+			idx := int(lum * float64(len(asciiRamp)-1))
+			out = append(out, asciiRamp[idx])
 		}
+		out = append(out, '\n')
 	}
-	return b.String()
+
+	return string(out)
 }

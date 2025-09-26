@@ -6,6 +6,7 @@ import (
 
 	"github.com/david22573/go-tvp/internal/player"
 	"github.com/david22573/go-tvp/internal/render"
+	"github.com/david22573/go-tvp/internal/term"
 )
 
 func main() {
@@ -18,9 +19,15 @@ func main() {
 	}
 
 	var renderer render.Renderer
+
+	h, w, err := term.Size()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	switch *mode {
 	case "ascii":
-		renderer = render.NewASCII()
+		renderer = render.NewASCIIRenderer(h, w)
 	default:
 		log.Fatalf("Unknown render mode: %s", *mode)
 	}

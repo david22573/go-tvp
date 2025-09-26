@@ -1,9 +1,7 @@
 package render
 
-type Renderer interface {
-	RenderFrame(rgb []byte, width, height int) string
-}
+import "image"
 
-func NewASCII() Renderer {
-	return &asciiRenderer{}
+type Renderer interface {
+	Render(img image.Image) string
 }
