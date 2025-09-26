@@ -1,58 +1,70 @@
 package render
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 )
 
-// Block characters give ~2x vertical resolution
-var blockChars = []rune(" █▀▄")
-
 type BlockRenderer struct {
-	width  int
-	height int
+	BaseRenderer
 }
 
-func NewBlockRenderer(width, height int) *BlockRenderer {
-	return &BlockRenderer{width: width, height: height}
+func NewBlockRenderer() *BlockRenderer {
+	return &BlockRenderer{}
+}
+
+func (r *BlockRenderer) Initialize(videoWidth, videoHeight int) error {
+	charAspect := 0.5 // Block: 2x1 vertical (each char represents 2 vertical pixels)
+	return r.calculateDimensions(videoWidth, videoHeight, charAspect)
 }
 
 func (r *BlockRenderer) Render(img image.Image) string {
 	bounds := img.Bounds()
-	dx := float64(bounds.Dx()) / float64(r.width)
-	dy := float64(bounds.Dy()) / float64(r.height*2)
+	dx := float64(bounds.Dx()) / float64(r.frameWidth)
+	dy := float64(bounds.Dy()) / float64(r.frameHeight*2)
 
-	out := make([]rune, 0, (r.width+1)*r.height)
-
-	for y := 0; y < r.height; y++ {
-		for x := 0; x < r.width; x++ {
+	str := ""
+	for y := 0; y < r.frameHeight; y++ {
+		for x := 0; x < r.frameWidth; x++ {
 			px := int(float64(x) * dx)
 			pyTop := int(float64(y*2) * dy)
 			pyBot := int(float64(y*2+1) * dy)
 
-			cTop := color.GrayModel.Convert(img.At(bounds.Min.X+px, bounds.Min.Y+pyTop)).(color.Gray)
-			cBot := color.GrayModel.Convert(img.At(bounds.Min.X+px, bounds.Min.Y+pyBot)).(color.Gray)
+			cTop := color.NRGBAModel.Convert(img.At(bounds.Min.X+px, bounds.Min.Y+pyTop)).(color.NRGBA)
+			cBot := color.NRGBAModel.Convert(img.At(bounds.Min.X+px, bounds.Min.Y+pyBot)).(color.NRGBA)
 
-			lumTop := float64(cTop.Y) / 255.0
-			lumBot := float64(cBot.Y) / 255.0
+			// Calculate luminance for both pixels
+			lumTop := (float64(cTop.R+cTop.G+cTop.B) / 3.0)
+			lumBot := (float64(cBot.R+cBot.G+cBot.B) / 3.0)
 
-			// Threshold for block rendering
-			topDark := lumTop < 0.5
-			botDark := lumBot < 0.5
+			topDark := lumTop < 128
+			botDark := lumBot < 128
+
+			// Choose block character based on which pixels are dark
+			var ch rune
+			var colorToUse color.NRGBA
 
 			switch {
 			case topDark && botDark:
-				out = append(out, '█')
+				ch = '█' // full block
+				colorToUse = cTop
 			case topDark && !botDark:
-				out = append(out, '▀')
+				ch = '▀' // upper half block
+				colorToUse = cTop
 			case !topDark && botDark:
-				out = append(out, '▄')
+				ch = '▄' // lower half block
+				colorToUse = cBot
 			default:
-				out = append(out, ' ')
+				ch = ' ' // empty space
+				colorToUse = cTop
 			}
+
+			str += fmt.Sprintf("\033[38;2;%d;%d;%dm%c",
+				colorToUse.R, colorToUse.G, colorToUse.B, ch)
 		}
-		out = append(out, '\n')
+		str += "\033[0m\n" // reset color at end of line
 	}
 
-	return string(out)
+	return str
 }

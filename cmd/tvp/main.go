@@ -6,12 +6,12 @@ import (
 
 	"github.com/david22573/go-tvp/internal/player"
 	"github.com/david22573/go-tvp/internal/render"
-	"github.com/david22573/go-tvp/internal/term"
 )
 
 func main() {
 	videoPath := flag.String("f", "", "Video file to play")
-	mode := flag.String("mode", "ascii", "Render mode: ascii|braille")
+	mode := flag.String("mode", "braille", "Render mode: ascii|braille|block|sixel")
+	colorMode := flag.Bool("color", true, "Render video in color (true/false)")
 	flag.Parse()
 
 	if *videoPath == "" {
@@ -19,21 +19,21 @@ func main() {
 	}
 
 	var renderer render.Renderer
-
-	h, w, err := term.Size()
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	switch *mode {
 	case "ascii":
-		renderer = render.NewASCIIRenderer(h, w)
+		renderer = render.NewASCIIRenderer()
+	case "braille":
+		renderer = render.NewBrailleRenderer()
+	case "block":
+		renderer = render.NewBlockRenderer()
+	case "sixel":
+		renderer = render.NewSixelRenderer()
 	default:
-		log.Fatalf("Unknown render mode: %s", *mode)
+		log.Fatalf("Unknown render mode: %s. Available: ascii, braille, block, sixel", *mode)
 	}
 
-	p := player.New(*videoPath, renderer)
-	if err := p.Play(); err != nil {
-		log.Fatal(err)
+	player := player.New(*videoPath, renderer, *colorMode)
+	if err := player.Play(); err != nil {
+		log.Fatalf("Playback failed: %v", err)
 	}
 }

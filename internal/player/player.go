@@ -5,119 +5,136 @@ import (
 	"image"
 	"image/color"
 	"io"
-	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/david22573/go-tvp/internal/render"
-	"github.com/david22573/go-tvp/internal/term"
 )
 
 type Player struct {
 	videoPath string
 	renderer  render.Renderer
+	color     bool
 }
 
-func New(videoPath string, r render.Renderer) *Player {
-	return &Player{videoPath: videoPath, renderer: r}
+func New(videoPath string, renderer render.Renderer, colorMode bool) *Player {
+	return &Player{videoPath: videoPath, renderer: renderer, color: colorMode}
 }
 
 func (p *Player) Play() error {
-	// Get actual video FPS
+	// Detect video properties
 	videoFPS, err := DetectFPS(p.videoPath)
 	if err != nil {
 		fmt.Printf("Warning: Could not detect FPS (%v), using 24fps\n", err)
 		videoFPS = 24.0
 	}
+	delay := time.Duration(float64(time.Second) / videoFPS)
 
-	fmt.Printf("Playing at %.2f FPS\n", videoFPS)
-
-	// Get terminal size - this will be our target ASCII dimensions
-	termW, termH, err := term.Size()
+	videoW, videoH, err := DetectResolution(p.videoPath)
 	if err != nil {
-		termW, termH = 80, 24 // fallback
+		fmt.Printf("Warning: Could not detect resolution (%v), defaulting 1920x1080\n", err)
+		videoW, videoH = 1920, 1080
 	}
 
-	// Scale terminal size for better aspect ratio (characters are taller than wide)
-	// Typical character aspect ratio is about 1:2, so we adjust width
-	aspectRatio := 2.0
-	videoW := int(float64(termW) * aspectRatio)
-	videoH := termH
+	// Initialize renderer with video dimensions
+	if err := p.renderer.Initialize(videoW, videoH); err != nil {
+		return fmt.Errorf("failed to initialize renderer: %w", err)
+	}
 
-	fmt.Printf("Terminal: %dx%d, Video output: %dx%d\n", termW, termH, videoW, videoH)
+	frameW, frameH := p.renderer.GetDimensions()
+	padX, padY := p.renderer.GetPadding()
 
-	cmd := exec.Command("ffmpeg",
-		"-i", p.videoPath,
-		"-f", "image2pipe",
-		"-pix_fmt", "rgb24",
-		"-vcodec", "rawvideo",
-		"-s", fmt.Sprintf("%dx%d", videoW, videoH), // Dynamic size based on terminal
-		"-",
-	)
+	fmt.Printf("Playing at %.2f FPS\n", videoFPS)
+	fmt.Printf("Frame: %dx%d, Padding: %dx%d\n", frameW, frameH, padX, padY)
 
+	// Prepare FFmpeg command
+	cmd := prepareFFmpegCommand(p.videoPath, frameW, frameH)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
+	defer cmd.Wait()
 
-	frameSize := videoW * videoH * 3
+	frameSize := frameW * frameH * 3
 	buf := make([]byte, frameSize)
-
-	// Create renderer with terminal dimensions
-	renderer := render.NewASCIIRenderer(termW, termH)
 
 	// Hide cursor during playback
 	fmt.Print("\033[?25l")
 	defer fmt.Print("\033[?25h")
 
-	delay := time.Duration(float64(time.Second) / videoFPS)
+	// Clear screen once
+	fmt.Print("\033[2J")
 
 	for {
-		frameStart := time.Now()
+		start := time.Now()
 
+		// Read frame data
 		_, err := io.ReadFull(stdout, buf)
 		if err != nil {
-			break
+			if err == io.EOF {
+				break // Normal end of video
+			}
+			return fmt.Errorf("failed to read frame: %w", err)
 		}
 
-		// Convert buf → image.RGBA
-		img := rgbToImage(buf, videoW, videoH)
+		// Convert raw RGB to image
+		img := RGBToImage(buf, frameW, frameH)
 
-		// Render with the chosen renderer
-		out := renderer.Render(img)
-
-		// Move cursor to top-left (don't clear entire screen each frame)
-		fmt.Print("\033[H")
-		fmt.Print(out)
-
-		// Calculate time spent rendering and adjust delay
-		renderTime := time.Since(frameStart)
-		if renderTime < delay {
-			time.Sleep(delay - renderTime)
+		// Convert to grayscale if needed
+		if !p.color {
+			img = convertToGray(img)
 		}
-		// If rendering took longer than expected delay, skip sleep to catch up
+
+		// Render frame
+		output := p.renderer.Render(img)
+
+		// Center and display
+		centeredOutput := p.centerOutput(output, padX, padY)
+		fmt.Print("\033[H") // move cursor to top-left
+		fmt.Print(centeredOutput)
+
+		// Frame rate control
+		elapsed := time.Since(start)
+		if elapsed < delay {
+			time.Sleep(delay - elapsed)
+		}
 	}
 
-	return cmd.Wait()
+	return nil
 }
 
-// rgbToImage converts raw RGB bytes into an *image.RGBA
-func rgbToImage(buf []byte, w, h int) *image.RGBA {
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	idx := 0
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			if idx+2 < len(buf) {
-				r := buf[idx]
-				g := buf[idx+1]
-				b := buf[idx+2]
-				img.Set(x, y, color.RGBA{r, g, b, 255})
-				idx += 3
-			}
+// centerOutput centers the rendered frame on the terminal
+func (p *Player) centerOutput(frame string, padX, padY int) string {
+	lines := strings.Split(strings.TrimSuffix(frame, "\n"), "\n")
+
+	// Create padding strings
+	leftPad := strings.Repeat(" ", padX)
+	topPad := strings.Repeat("\n", padY)
+
+	// Apply padding to each line
+	var centeredLines []string
+	for _, line := range lines {
+		centeredLines = append(centeredLines, leftPad+line)
+	}
+
+	return topPad + strings.Join(centeredLines, "\n") + "\n"
+}
+
+// convertToGray converts an image.RGBA to grayscale
+func convertToGray(img *image.RGBA) *image.RGBA {
+	bounds := img.Bounds()
+	out := image.NewRGBA(bounds)
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			c := color.GrayModel.Convert(img.At(x, y)).(color.Gray)
+			out.Set(x, y, c)
 		}
 	}
-	return img
+
+	return out
 }
